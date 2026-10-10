@@ -64,6 +64,15 @@ describe('Health Check API', () => {
     expect(response.status).toBe(400);
     expect(response.body.status).toBe('ERROR');
   });
+
+  it('rejects URL fragments', async () => {
+    const response = await request(app)
+      .get('/health/check')
+      .query({ url: 'https://example.com/#section' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.status).toBe('ERROR');
+  });
 });
 
 describe('IP address security', () => {
@@ -111,5 +120,30 @@ describe('IP address security', () => {
 
   it('accepts a public IPv4 address', () => {
     expect(isPublicAddress('8.8.8.8')).toBe(true);
+  });
+
+  it('rejects IPv4 carrier-grade NAT addresses', () => {
+    expect(isPublicAddress('100.64.0.1')).toBe(false);
+  });
+
+  it('rejects IPv4 documentation addresses', () => {
+    expect(isPublicAddress('192.0.2.1')).toBe(false);
+    expect(isPublicAddress('198.51.100.1')).toBe(false);
+    expect(isPublicAddress('203.0.113.1')).toBe(false);
+  });
+
+  it('rejects IPv4 benchmarking and multicast addresses', () => {
+    expect(isPublicAddress('198.18.0.1')).toBe(false);
+    expect(isPublicAddress('224.0.0.1')).toBe(false);
+    expect(isPublicAddress('240.0.0.1')).toBe(false);
+  });
+
+  it('rejects IPv6 documentation and transition addresses', () => {
+    expect(isPublicAddress('2001:db8::1')).toBe(false);
+    expect(isPublicAddress('2002::1')).toBe(false);
+  });
+
+  it('rejects IPv4-mapped IPv6 private addresses', () => {
+    expect(isPublicAddress('::ffff:192.168.1.1')).toBe(false);
   });
 });

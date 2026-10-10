@@ -13,12 +13,45 @@ const REQUEST_TIMEOUT_MS = Math.min(
   Math.max(1000, Number(process.env.REQUEST_TIMEOUT_MS) || 5000)
 );
 const SERVICE_NAME = 'ts-service-health-checker';
+
 const ALLOWED_HOSTS = new Set(
   (process.env.ALLOWED_HEALTHCHECK_HOSTS || '')
     .split(',')
     .map((host) => host.trim().toLowerCase().replace(/\.$/, ''))
     .filter(Boolean)
 );
+
+const BLOCKED_IPV4_RANGES = [
+  '0.0.0.0/8',
+  '10.0.0.0/8',
+  '100.64.0.0/10',
+  '127.0.0.0/8',
+  '169.254.0.0/16',
+  '172.16.0.0/12',
+  '192.0.0.0/24',
+  '192.0.2.0/24',
+  '192.88.99.0/24',
+  '192.168.0.0/16',
+  '198.18.0.0/15',
+  '198.51.100.0/24',
+  '203.0.113.0/24',
+  '224.0.0.0/4',
+  '240.0.0.0/4'
+].map((range) => ipaddr.parseCIDR(range));
+
+const BLOCKED_IPV6_RANGES = [
+  '::/128',
+  '::1/128',
+  '64:ff9b:1::/48',
+  '100::/64',
+  '2001::/23',
+  '2001:db8::/32',
+  '2002::/16',
+  '3fff::/20',
+  'fc00::/7',
+  'fe80::/10',
+  'ff00::/8'
+].map((range) => ipaddr.parseCIDR(range));
 
 function isPublicAddress(address: string): boolean {
   try {
@@ -28,12 +61,27 @@ function isPublicAddress(address: string): boolean {
       const ipv6 = parsed as ipaddr.IPv6;
 
       if (ipv6.isIPv4MappedAddress()) {
-        const mapped = ipv6.toIPv4Address();
-        return mapped.range() === 'unicast';
+        return isPublicAddress(ipv6.toIPv4Address().toString());
       }
+
+      if (parsed.range() !== 'unicast') {
+        return false;
+      }
+
+      return !BLOCKED_IPV6_RANGES.some((range) =>
+        ipv6.match(range)
+      );
     }
 
-    return parsed.range() === 'unicast';
+    const ipv4 = parsed as ipaddr.IPv4;
+
+    if (parsed.range() !== 'unicast') {
+      return false;
+    }
+
+    return !BLOCKED_IPV4_RANGES.some((range) =>
+      ipv4.match(range)
+    );
   } catch {
     return false;
   }
@@ -77,11 +125,12 @@ app.get('/health/check', async (req: Request, res: Response) => {
   if (
     !['http:', 'https:'].includes(targetUrl.protocol) ||
     targetUrl.username ||
-    targetUrl.password
+    targetUrl.password ||
+    targetUrl.hash
   ) {
     res.status(400).json({
       status: 'ERROR',
-      message: 'Only HTTP and HTTPS URLs without credentials are supported.'
+      message: 'Only HTTP and HTTPS URLs without credentials or fragments are supported.'
     });
     return;
   }
@@ -92,10 +141,15 @@ app.get('/health/check', async (req: Request, res: Response) => {
     .replace(/\.$/, '');
 
   if (
+    !hostname ||
     !ALLOWED_HOSTS.has(hostname) ||
     hostname === 'localhost' ||
     hostname.endsWith('.localhost') ||
     hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.test') ||
+    hostname.endsWith('.invalid') ||
+    hostname.endsWith('.example') ||
     isIP(hostname) !== 0
   ) {
     res.status(403).json({
@@ -133,7 +187,6 @@ app.get('/health/check', async (req: Request, res: Response) => {
       const transport = targetUrl.protocol === 'https:' ? https : http;
       const controller = new AbortController();
       let settled = false;
-      let timeout: ReturnType<typeof setTimeout>;
 
       const finishError = (error: Error) => {
         if (settled) return;
@@ -142,7 +195,7 @@ app.get('/health/check', async (req: Request, res: Response) => {
         reject(error);
       };
 
-      timeout = setTimeout(() => {
+      const timeout = setTimeout(() => {
         controller.abort();
         finishError(new Error('Request timed out.'));
       }, REQUEST_TIMEOUT_MS);
@@ -173,7 +226,8 @@ app.get('/health/check', async (req: Request, res: Response) => {
             selectedAddress.family
           );
         }) as never,
-        servername: targetUrl.protocol === 'https:' ? hostname : undefined
+        servername:
+          targetUrl.protocol === 'https:' ? hostname : undefined
       };
 
       const outgoing = transport.request(requestOptions, (incoming) => {
@@ -183,8 +237,10 @@ app.get('/health/check', async (req: Request, res: Response) => {
 
         incoming.on('end', () => {
           if (settled) return;
+
           settled = true;
           clearTimeout(timeout);
+
           resolve({
             httpStatus,
             durationMs: Date.now() - startedAt
@@ -200,7 +256,9 @@ app.get('/health/check', async (req: Request, res: Response) => {
 
     res.status(200).json({
       status:
-        result.httpStatus >= 200 && result.httpStatus < 400 ? 'UP' : 'DOWN',
+        result.httpStatus >= 200 && result.httpStatus < 400
+          ? 'UP'
+          : 'DOWN',
       target: targetUrl.origin,
       httpStatus: result.httpStatus,
       durationMs: result.durationMs,
@@ -208,7 +266,8 @@ app.get('/health/check', async (req: Request, res: Response) => {
     });
   } catch (error) {
     const timedOut =
-      error instanceof Error && error.message === 'Request timed out.';
+      error instanceof Error &&
+      error.message === 'Request timed out.';
 
     res.status(200).json({
       status: 'DOWN',
