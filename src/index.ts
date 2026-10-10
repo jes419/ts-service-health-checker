@@ -64,24 +64,20 @@ function isPublicAddress(address: string): boolean {
         return isPublicAddress(ipv6.toIPv4Address().toString());
       }
 
-      if (parsed.range() !== 'unicast') {
+      if (ipv6.range() !== 'unicast') {
         return false;
       }
 
-      return !BLOCKED_IPV6_RANGES.some((range) =>
-        ipv6.match(range)
-      );
+      return !BLOCKED_IPV6_RANGES.some((range) => ipv6.match(range));
     }
 
     const ipv4 = parsed as ipaddr.IPv4;
 
-    if (parsed.range() !== 'unicast') {
+    if (ipv4.range() !== 'unicast') {
       return false;
     }
 
-    return !BLOCKED_IPV4_RANGES.some((range) =>
-      ipv4.match(range)
-    );
+    return !BLOCKED_IPV4_RANGES.some((range) => ipv4.match(range));
   } catch {
     return false;
   }
@@ -130,7 +126,8 @@ app.get('/health/check', async (req: Request, res: Response) => {
   ) {
     res.status(400).json({
       status: 'ERROR',
-      message: 'Only HTTP and HTTPS URLs without credentials or fragments are supported.'
+      message:
+        'Only HTTP and HTTPS URLs without credentials or fragments are supported.'
     });
     return;
   }
@@ -188,17 +185,17 @@ app.get('/health/check', async (req: Request, res: Response) => {
       const controller = new AbortController();
       let settled = false;
 
+      const timeout = setTimeout(() => {
+        controller.abort();
+        finishError(new Error('Request timed out.'));
+      }, REQUEST_TIMEOUT_MS);
+
       const finishError = (error: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         reject(error);
       };
-
-      const timeout = setTimeout(() => {
-        controller.abort();
-        finishError(new Error('Request timed out.'));
-      }, REQUEST_TIMEOUT_MS);
 
       const requestOptions: http.RequestOptions | https.RequestOptions = {
         protocol: targetUrl.protocol,
