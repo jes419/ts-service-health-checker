@@ -12,11 +12,19 @@ const REQUEST_TIMEOUT_MS = Math.min(
   Math.max(1000, Number(process.env.REQUEST_TIMEOUT_MS) || 5000)
 );
 const SERVICE_NAME = 'ts-service-health-checker';
+const TIMEOUT_MESSAGE = 'Request timed out.';
 
 const ALLOWED_HOSTS = new Set(
   (process.env.ALLOWED_HEALTHCHECK_HOSTS || '')
     .split(',')
     .map((host) => host.trim().toLowerCase().replace(/\.$/, ''))
+    .filter(Boolean)
+);
+
+const ALLOWED_PORTS = new Set(
+  (process.env.ALLOWED_HEALTHCHECK_PORTS || '80,443')
+    .split(',')
+    .map((port) => Number(port.trim()))
     .filter(Boolean)
 );
 
@@ -40,6 +48,7 @@ const BLOCKED_IPV4_RANGES = [
 
 const BLOCKED_IPV6_RANGES = [
   '::/128',
+  '::/96',
   '::1/128',
   '64:ff9b:1::/48',
   '100::/64',
@@ -79,6 +88,29 @@ function isPublicAddress(address: string): boolean {
     return !BLOCKED_IPV4_RANGES.some((range) => ipv4.match(range));
   } catch {
     return false;
+  }
+}
+
+async function lookupWithTimeout(hostname: string, deadline: number) {
+  const remaining = deadline - Date.now();
+
+  if (remaining <= 0) {
+    throw new Error(TIMEOUT_MESSAGE);
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(TIMEOUT_MESSAGE)), remaining);
+  });
+
+  try {
+    return await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }),
+      timeoutPromise
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -155,13 +187,25 @@ app.get('/health/check', async (req: Request, res: Response) => {
     return;
   }
 
+  const effectivePort = targetUrl.port
+    ? Number(targetUrl.port)
+    : targetUrl.protocol === 'https:'
+      ? 443
+      : 80;
+
+  if (!ALLOWED_PORTS.has(effectivePort)) {
+    res.status(403).json({
+      status: 'ERROR',
+      message: 'The target port is not allowed.'
+    });
+    return;
+  }
+
   const startedAt = Date.now();
+  const deadline = startedAt + REQUEST_TIMEOUT_MS;
 
   try {
-    const addresses = await lookup(hostname, {
-      all: true,
-      verbatim: true
-    });
+    const addresses = await lookupWithTimeout(hostname, deadline);
 
     if (
       addresses.length === 0 ||
@@ -175,6 +219,11 @@ app.get('/health/check', async (req: Request, res: Response) => {
     }
 
     const selectedAddress = addresses[0];
+    const remainingMs = deadline - Date.now();
+
+    if (remainingMs <= 0) {
+      throw new Error(TIMEOUT_MESSAGE);
+    }
 
     const result = await new Promise<{
       httpStatus: number;
@@ -192,21 +241,18 @@ app.get('/health/check', async (req: Request, res: Response) => {
       };
 
       const timeout = setTimeout(() => {
+        finishError(new Error(TIMEOUT_MESSAGE));
         controller.abort();
-        finishError(new Error('Request timed out.'));
-      }, REQUEST_TIMEOUT_MS);
+      }, remainingMs);
 
       const requestOptions: http.RequestOptions | https.RequestOptions = {
         protocol: targetUrl.protocol,
         hostname,
-        port: targetUrl.port
-          ? Number(targetUrl.port)
-          : targetUrl.protocol === 'https:'
-            ? 443
-            : 80,
+        port: effectivePort,
         method: 'GET',
         path: `${targetUrl.pathname}${targetUrl.search}`,
         signal: controller.signal,
+        agent: false,
         headers: {
           Host: targetUrl.host,
           Connection: 'close'
@@ -272,14 +318,13 @@ app.get('/health/check', async (req: Request, res: Response) => {
     });
   } catch (error) {
     const timedOut =
-      error instanceof Error &&
-      error.message === 'Request timed out.';
+      error instanceof Error && error.message === TIMEOUT_MESSAGE;
 
     res.status(200).json({
       status: 'DOWN',
       target: targetUrl.origin,
       error: timedOut
-        ? 'Request timed out.'
+        ? TIMEOUT_MESSAGE
         : 'Target service could not be reached.',
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString()
