@@ -1,11 +1,15 @@
+
 {
   "name": "ts-service-health-checker",
   "version": "1.0.0",
-  "description": "Production-ready Dockerized TypeScript microservice for real-time HTTP service health monitoring.",
+  "description": "Dockerized TypeScript microservice for HTTP service health monitoring with automated API tests.",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run build && npm test"
   },
   "dependencies": {
     "express": "^4.19.2"
@@ -13,6 +17,9 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3"
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.3.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.11"
   }
 }
