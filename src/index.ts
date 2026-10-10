@@ -1,4 +1,3 @@
-
 import express, { Request, Response, NextFunction } from 'express';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
@@ -37,7 +36,7 @@ const BLOCKED_IPV4_RANGES = [
   '203.0.113.0/24',
   '224.0.0.0/4',
   '240.0.0.0/4'
-].map((range) => ipaddr.parseCIDR(range));
+].map((range) => ipaddr.IPv4.parseCIDR(range));
 
 const BLOCKED_IPV6_RANGES = [
   '::/128',
@@ -51,7 +50,7 @@ const BLOCKED_IPV6_RANGES = [
   'fc00::/7',
   'fe80::/10',
   'ff00::/8'
-].map((range) => ipaddr.parseCIDR(range));
+].map((range) => ipaddr.IPv6.parseCIDR(range));
 
 function isPublicAddress(address: string): boolean {
   try {
@@ -185,17 +184,17 @@ app.get('/health/check', async (req: Request, res: Response) => {
       const controller = new AbortController();
       let settled = false;
 
-      const timeout = setTimeout(() => {
-        controller.abort();
-        finishError(new Error('Request timed out.'));
-      }, REQUEST_TIMEOUT_MS);
-
       const finishError = (error: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         reject(error);
       };
+
+      const timeout = setTimeout(() => {
+        controller.abort();
+        finishError(new Error('Request timed out.'));
+      }, REQUEST_TIMEOUT_MS);
 
       const requestOptions: http.RequestOptions | https.RequestOptions = {
         protocol: targetUrl.protocol,
@@ -214,9 +213,19 @@ app.get('/health/check', async (req: Request, res: Response) => {
         },
         lookup: ((
           _host: string,
-          _options: unknown,
+          options: { all?: boolean } | undefined,
           callback: (...args: unknown[]) => void
         ) => {
+          if (options && options.all) {
+            callback(null, [
+              {
+                address: selectedAddress.address,
+                family: selectedAddress.family
+              }
+            ]);
+            return;
+          }
+
           callback(
             null,
             selectedAddress.address,
